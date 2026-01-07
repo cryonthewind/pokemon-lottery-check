@@ -77,24 +77,28 @@ async function authorize() {
 
   fs.writeFileSync(
     TOKEN_PATH,
-    JSON.stringify({
-      type: 'authorized_user',
-      client_id,
-      client_secret,
-      refresh_token: tokens.refresh_token,
-    }, null, 2)
+    JSON.stringify(
+      {
+        type: 'authorized_user',
+        client_id,
+        client_secret,
+        refresh_token: tokens.refresh_token,
+      },
+      null,
+      2
+    )
   );
 
   return oAuth2Client;
 }
 
 // ======================================================
-// List & export lottery mails 当選 / 落選
+// List & export lottery mails 当選 / 落選 (Direction B: UNIQUE mailbox results)
 // ======================================================
 async function listPokemonLottery(auth) {
   const gmail = google.gmail({ version: 'v1', auth });
 
-  // NOTE: query keeps your original intent
+  // Query: last 30 days, subjects containing 当選 or 抽選結果
   const res = await gmail.users.messages.list({
     userId: 'me',
     q: 'subject:当選 OR subject:抽選結果 newer_than:30d',
@@ -107,10 +111,11 @@ async function listPokemonLottery(auth) {
     return;
   }
 
+  // Message-level logs (these count messages, NOT unique mailboxes)
   const winMails = [];
   const loseMails = [];
 
-  // email -> "o" / "x"
+  // Unique mailbox result map: email -> 'o' (win) or 'x' (lose)
   const resultMap = new Map();
 
   for (const m of messages) {
@@ -126,66 +131,46 @@ async function listPokemonLottery(auth) {
     const from = getHeader(headers, 'From').trim();
     const toHeader = getHeader(headers, 'To').trim();
 
-    let isWin = false;
-    let isLose = false;
-
-    // Your rule:
-    // - subject includes 当選 => win
-    // - subject includes 抽選結果 => lose
-    if (subject.includes('当選')) {
-      isWin = true;
-    } else if (subject.includes('抽選結果')) {
-      isLose = true;
-    }
+    // Detect win/lose by subject
+    const isWin = subject.includes('当選');
+    const isLose = !isWin && subject.includes('抽選結果'); // avoid double count if both match
 
     if (!isWin && !isLose) continue;
 
-    // Keep logs list
-    if (isWin) {
-      winMails.push({ from, to: toHeader, subject });
-    } else {
-      loseMails.push({ from, to: toHeader, subject });
-    }
+    // Keep message-level logs (optional)
+    if (isWin) winMails.push({ from, to: toHeader, subject });
+    if (isLose) loseMails.push({ from, to: toHeader, subject });
 
-    // ✅ Key part: choose mapping target (FROM for hotmail/outlook, else TO)
+    // Choose mapping target (FROM for hotmail/outlook, else TO)
     const targetEmails = decideTargetEmails(from, toHeader);
-
-    // If cannot parse anything, skip (avoid writing empty key)
     if (targetEmails.length === 0) continue;
 
+    // Update unique result map (win overrides lose)
     for (const email of targetEmails) {
       const current = resultMap.get(email);
-
-      // Win overrides lose
       if (isWin) {
         resultMap.set(email, 'o');
       } else if (isLose) {
-        if (current !== 'o') {
-          resultMap.set(email, 'x');
-        }
+        if (current !== 'o') resultMap.set(email, 'x');
       }
     }
   }
 
-  console.log('===== 🎉 当選 =====');
-  winMails.forEach(m => {
-    console.log(`当選、From: ${m.from} | To: ${m.to}`);
-  });
+  // ======================================================
+  // ✅ Direction B summary: UNIQUE counts (consistent with CSV)
+  // ======================================================
+  const winUnique = [...resultMap.values()].filter(v => v === 'o').length;
+  const loseUnique = [...resultMap.values()].filter(v => v === 'x').length;
+  const totalUnique = resultMap.size;
 
-  console.log('===== 💧 落選 =====');
-  loseMails.forEach(m => {
-    console.log(`落選、From: ${m.from} | To: ${m.to}`);
-  });
-
-  const total = winMails.length + loseMails.length;
   console.log('=====================');
-  console.log(`（当選: ${winMails.length}）`);
-  console.log(`（落選: ${loseMails.length}）`);
-  console.log(`抽選メール総数（当選＋落選）: ${total}`);
+  console.log(`（当選 unique: ${winUnique}）`);
+  console.log(`（落選 unique: ${loseUnique}）`);
+  console.log(`Unique total（当選＋落選）: ${totalUnique}`);
   console.log('=====================');
 
   // ======================================================
-  // EXPORT CSV — 当選(o) trước → 落選(x) sau
+  // EXPORT CSV — 当選(o) first → 落選(x) after (UNIQUE)
   // ======================================================
   const winList = [];
   const loseList = [];
@@ -195,7 +180,7 @@ async function listPokemonLottery(auth) {
     else if (result === 'x') loseList.push({ mail, result });
   }
 
-  // Optional: sort for stable output
+  // Stable sort
   winList.sort((a, b) => a.mail.localeCompare(b.mail));
   loseList.sort((a, b) => a.mail.localeCompare(b.mail));
 
@@ -205,6 +190,7 @@ async function listPokemonLottery(auth) {
 
   const outPath = path.join(__dirname, 'gmail_lottery_result.csv');
   fs.writeFileSync(outPath, lines.join('\n'), 'utf8');
+
   console.log(`CSV exported: ${outPath}`);
 }
 
