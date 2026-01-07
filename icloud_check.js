@@ -4,6 +4,7 @@
 const { ImapFlow } = require('imapflow');
 const fs = require('fs');
 const path = require('path');
+require('dotenv').config();
 
 async function listIcloudLottery() {
   const client = new ImapFlow({
@@ -11,8 +12,10 @@ async function listIcloudLottery() {
     port: 993,
     secure: true,
     auth: {
-      user: 'iris_992000@icloud.com',   // Apple ID email
-      pass: 'jgxg-iskc-zfhn-joeq',      // app-specific password
+      user: process.env.ICLOUD_USER,   // Apple ID email
+      pass: process.env.ICLOUD_PASS,      // app-specific password
+      // user: 'phanhangnga2001@icloud.com',   // Apple ID email
+      // pass: 'kdkv-dxtj-drtk-thpo',      // app-specific password
     },
     disableCompression: true,
     tls: {
@@ -27,7 +30,8 @@ async function listIcloudLottery() {
     await client.mailboxOpen('INBOX');
 
     const sinceDate = new Date();
-    sinceDate.setMonth(sinceDate.getMonth() - 1); // last 1 month
+    sinceDate.setDate(sinceDate.getDate() - 7); // last 1 week
+
 
     const messageUids = await client.search({ since: sinceDate });
 
@@ -98,6 +102,9 @@ async function listIcloudLottery() {
 
     const total = winMails.length + loseMails.length;
     console.log('=====================');
+    console.log(`（当選: ${winMails.length}）\n`);
+    
+    console.log(`（落選: ${loseMails.length}）\n`);
     console.log(`抽選メール総数（当選＋落選）: ${total}`);
     console.log('=====================');
 

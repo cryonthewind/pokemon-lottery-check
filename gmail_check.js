@@ -11,6 +11,31 @@ function getHeader(headers, name) {
   return h ? h.value : '';
 }
 
+// Extract emails from header like:
+// 'Name <a@b.com>, "X" <c@d.com>' => ['a@b.com','c@d.com']
+// 'a@b.com' => ['a@b.com']
+function extractEmails(headerValue) {
+  if (!headerValue) return [];
+  return headerValue
+    .split(',')
+    .map(s => s.trim())
+    .map(addr => {
+      const match = addr.match(/<([^>]+)>/);
+      return (match ? match[1] : addr).trim();
+    })
+    .filter(Boolean);
+}
+
+// Decide which header to use for mapping result:
+// - If sender is hotmail/outlook => use FROM
+// - Otherwise => use TO (Pokemon Center pattern)
+function decideTargetEmails(from, toHeader) {
+  if (/hotmail\.com|outlook\.com/i.test(from || '')) {
+    return extractEmails(from);
+  }
+  return extractEmails(toHeader);
+}
+
 async function authorize() {
   const { installed, web } = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf-8'));
   const key = installed || web;
@@ -57,17 +82,19 @@ async function authorize() {
       client_id,
       client_secret,
       refresh_token: tokens.refresh_token,
-    })
+    }, null, 2)
   );
+
   return oAuth2Client;
 }
 
 // ======================================================
-// 🧾 List & export lottery mails 当選 / 落選
+// List & export lottery mails 当選 / 落選
 // ======================================================
 async function listPokemonLottery(auth) {
   const gmail = google.gmail({ version: 'v1', auth });
 
+  // NOTE: query keeps your original intent
   const res = await gmail.users.messages.list({
     userId: 'me',
     q: 'subject:当選 OR subject:抽選結果 newer_than:30d',
@@ -75,7 +102,6 @@ async function listPokemonLottery(auth) {
   });
 
   const messages = res.data.messages || [];
-
   if (messages.length === 0) {
     console.log('Không tìm thấy email 当選 hoặc 抽選結果.');
     return;
@@ -95,14 +121,17 @@ async function listPokemonLottery(auth) {
       metadataHeaders: ['Subject', 'From', 'To'],
     });
 
-    const headers = msg.data.payload.headers;
+    const headers = msg.data.payload?.headers || [];
     const subject = getHeader(headers, 'Subject').trim();
-    const from = getHeader(headers, 'From');
-    const toHeader = getHeader(headers, 'To');
+    const from = getHeader(headers, 'From').trim();
+    const toHeader = getHeader(headers, 'To').trim();
 
     let isWin = false;
     let isLose = false;
 
+    // Your rule:
+    // - subject includes 当選 => win
+    // - subject includes 抽選結果 => lose
     if (subject.includes('当選')) {
       isWin = true;
     } else if (subject.includes('抽選結果')) {
@@ -111,24 +140,23 @@ async function listPokemonLottery(auth) {
 
     if (!isWin && !isLose) continue;
 
+    // Keep logs list
     if (isWin) {
-      winMails.push({ from, to: toHeader });
-    } else if (isLose) {
-      loseMails.push({ from, to: toHeader });
+      winMails.push({ from, to: toHeader, subject });
+    } else {
+      loseMails.push({ from, to: toHeader, subject });
     }
 
-    const toList = toHeader
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean);
+    // ✅ Key part: choose mapping target (FROM for hotmail/outlook, else TO)
+    const targetEmails = decideTargetEmails(from, toHeader);
 
-    for (const addr of toList) {
-      const match = addr.match(/<([^>]+)>/);
-      const email = match ? match[1] : addr;
+    // If cannot parse anything, skip (avoid writing empty key)
+    if (targetEmails.length === 0) continue;
 
-      if (!email) continue;
-
+    for (const email of targetEmails) {
       const current = resultMap.get(email);
+
+      // Win overrides lose
       if (isWin) {
         resultMap.set(email, 'o');
       } else if (isLose) {
@@ -143,19 +171,21 @@ async function listPokemonLottery(auth) {
   winMails.forEach(m => {
     console.log(`当選、From: ${m.from} | To: ${m.to}`);
   });
-  c
 
   console.log('===== 💧 落選 =====');
   loseMails.forEach(m => {
     console.log(`落選、From: ${m.from} | To: ${m.to}`);
   });
+
+  const total = winMails.length + loseMails.length;
   console.log('=====================');
-  onsole.log(`（当選: ${winMails.length}）\n`);
-  console.log(`（落選: ${loseMails.length}）\n`);
+  console.log(`（当選: ${winMails.length}）`);
+  console.log(`（落選: ${loseMails.length}）`);
   console.log(`抽選メール総数（当選＋落選）: ${total}`);
   console.log('=====================');
+
   // ======================================================
-  // 📌 EXPORT CSV — 当選(o) trước → 落選(x) sau
+  // EXPORT CSV — 当選(o) trước → 落選(x) sau
   // ======================================================
   const winList = [];
   const loseList = [];
@@ -165,21 +195,20 @@ async function listPokemonLottery(auth) {
     else if (result === 'x') loseList.push({ mail, result });
   }
 
-  const lines = ['mail,result'];
+  // Optional: sort for stable output
+  winList.sort((a, b) => a.mail.localeCompare(b.mail));
+  loseList.sort((a, b) => a.mail.localeCompare(b.mail));
 
-  winList.forEach(r => lines.push(`${r.mail},${r.result}`)); // 当選 first
-  loseList.forEach(r => lines.push(`${r.mail},${r.result}`)); // 落選 after
+  const lines = ['Email;Result'];
+  winList.forEach(r => lines.push(`${r.mail};${r.result}`));
+  loseList.forEach(r => lines.push(`${r.mail};${r.result}`));
 
-  const csvContent = lines.join('\n');
   const outPath = path.join(__dirname, 'gmail_lottery_result.csv');
-
-  fs.writeFileSync(outPath, csvContent, 'utf8');
+  fs.writeFileSync(outPath, lines.join('\n'), 'utf8');
   console.log(`CSV exported: ${outPath}`);
 }
 
-// ======================================================
-
+// Run
 authorize()
   .then(auth => listPokemonLottery(auth))
   .catch(console.error);
-// ======================================================
