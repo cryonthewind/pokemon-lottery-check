@@ -194,3 +194,10 @@ Dùng IMAP token (App-Specific Password) đã tạo ở bước 2.
     bạn\
 -   Nếu cần bản **PDF hướng dẫn** → mình xuất PDF cho bạn\
 -   Nếu muốn auto-update token Gmail → mình viết giúp luôn
+
+
+## RUN server
+node server.js
+node server_icloud.js
+## STOP server
+kill -9 $(lsof -ti :8787)

@@ -2,6 +2,7 @@
   "dependencies": {
     "dotenv": "^17.2.3",
     "exceljs": "^4.4.0",
-    "imapflow": "^1.1.1"
+    "imapflow": "^1.2.4",
+    "mailparser": "^3.9.1"
   }
 }
