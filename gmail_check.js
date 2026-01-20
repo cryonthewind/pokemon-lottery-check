@@ -1,4 +1,12 @@
+// Gmail: export Pokemon Center lottery result to EXCEL (Direction B: unique mailbox results)
+// Result format: Email, Result (o = win / x = lose)
+//
+// Notes:
+// - Console counts are UNIQUE mailbox counts, consistent with Excel.
+// - If an address has both win/lose emails, win ("o") wins and is not overwritten.
+
 const { google } = require('googleapis');
+const ExcelJS = require('exceljs');
 const fs = require('fs');
 const path = require('path');
 
@@ -35,6 +43,13 @@ function decideTargetEmails(from, toHeader) {
   }
   return extractEmails(toHeader);
 }
+
+// ===================== log helpers =====================
+function pct(n, d) {
+  if (!d) return '0.00%';
+  return `${((n / d) * 100).toFixed(2)}%`;
+}
+// ======================================================
 
 async function authorize() {
   const { installed, web } = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf-8'));
@@ -101,7 +116,7 @@ async function listPokemonLottery(auth) {
   // Query: last 30 days, subjects containing 当選 or 抽選結果
   const res = await gmail.users.messages.list({
     userId: 'me',
-    q: 'subject:当選 OR subject:抽選結果 newer_than:30d',
+    q: 'subject:当選 OR subject:抽選結果 newer_than:1d',
     maxResults: 500,
   });
 
@@ -157,7 +172,7 @@ async function listPokemonLottery(auth) {
   }
 
   // ======================================================
-  // ✅ Direction B summary: UNIQUE counts (consistent with CSV)
+  // ✅ Direction B summary: UNIQUE counts (consistent with Excel)
   // ======================================================
   const winUnique = [...resultMap.values()].filter(v => v === 'o').length;
   const loseUnique = [...resultMap.values()].filter(v => v === 'x').length;
@@ -169,8 +184,44 @@ async function listPokemonLottery(auth) {
   console.log(`Unique total（当選＋落選）: ${totalUnique}`);
   console.log('=====================');
 
+  // ===================== ONLY final logs =====================
+  // Build unique email lists from resultMap (no logic change)
+  const winEmails = [];
+  const loseEmails = [];
+
+  for (const [mail, result] of resultMap.entries()) {
+    if (result === 'o') winEmails.push(mail);
+    else if (result === 'x') loseEmails.push(mail);
+  }
+
+  // Stable sort for readability
+  winEmails.sort((a, b) => a.localeCompare(b));
+  loseEmails.sort((a, b) => a.localeCompare(b));
+
+  // Rate log
+  console.log('\n========== HIT RATE ==========');
+  console.log(`当選率: ${pct(winUnique, totalUnique)} (${winUnique}/${totalUnique})`);
+  console.log(`落選率: ${pct(loseUnique, totalUnique)} (${loseUnique}/${totalUnique})`);
+  console.log('==============================');
+
+  // Detail log (your requested format)
+  console.log('\n========== CHECK DETAIL ==========');
+
+  console.log(`当選 emails (${winEmails.length}):`);
+  for (const mail of winEmails) {
+    console.log('  +', mail);
+  }
+
+  console.log(`\n落選 emails (${loseEmails.length}):`);
+  for (const mail of loseEmails) {
+    console.log('  -', mail);
+  }
+
+  console.log('==================================');
+  // =================== END LOGS ===================
+
   // ======================================================
-  // EXPORT CSV — 当選(o) first → 落選(x) after (UNIQUE)
+  // EXPORT EXCEL — 当選(o) first → 落選(x) after (UNIQUE)
   // ======================================================
   const winList = [];
   const loseList = [];
@@ -184,14 +235,42 @@ async function listPokemonLottery(auth) {
   winList.sort((a, b) => a.mail.localeCompare(b.mail));
   loseList.sort((a, b) => a.mail.localeCompare(b.mail));
 
-  const lines = ['Email;Result'];
-  winList.forEach(r => lines.push(`${r.mail};${r.result}`));
-  loseList.forEach(r => lines.push(`${r.mail};${r.result}`));
+  // Create Excel workbook
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'gmail-lottery-export';
+  workbook.created = new Date();
 
-  const outPath = path.join(__dirname, 'gmail_lottery_result.csv');
-  fs.writeFileSync(outPath, lines.join('\n'), 'utf8');
+  // Sheet 1: Results (o first, then x)
+  const ws = workbook.addWorksheet('Results');
+  ws.columns = [
+    { header: 'Email', key: 'mail', width: 40 },
+    { header: 'Result', key: 'result', width: 10 },
+  ];
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
+  ws.getRow(1).font = { bold: true };
+  ws.autoFilter = { from: 'A1', to: 'B1' };
 
-  console.log(`CSV exported: ${outPath}`);
+  // Add rows (o first then x)
+  winList.forEach(r => ws.addRow(r));
+  loseList.forEach(r => ws.addRow(r));
+
+  // Sheet 2: Summary (optional)
+  const ws2 = workbook.addWorksheet('Summary');
+  ws2.columns = [
+    { header: 'Metric', key: 'metric', width: 25 },
+    { header: 'Value', key: 'value', width: 35 },
+  ];
+  ws2.getRow(1).font = { bold: true };
+  ws2.addRow({ metric: 'Win (unique)', value: winUnique });
+  ws2.addRow({ metric: 'Lose (unique)', value: loseUnique });
+  ws2.addRow({ metric: 'Total (unique)', value: totalUnique });
+  ws2.addRow({ metric: 'Win rate', value: `${pct(winUnique, totalUnique)} (${winUnique}/${totalUnique})` });
+  ws2.addRow({ metric: 'Lose rate', value: `${pct(loseUnique, totalUnique)} (${loseUnique}/${totalUnique})` });
+
+  const outPath = path.join(__dirname, 'gmail_lottery_result.xlsx');
+  await workbook.xlsx.writeFile(outPath);
+
+  console.log(`Excel exported: ${outPath}`);
 }
 
 // Run

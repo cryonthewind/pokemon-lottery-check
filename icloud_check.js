@@ -1,16 +1,15 @@
-// iCloud IMAP: export lottery result to CSV (Direction B: unique "To" mailbox results)
+// iCloud IMAP: export lottery result to EXCEL (Direction B: unique "To" mailbox results)
 // Result format: mail,result  (o = win / x = lose)
 //
 // Notes:
-// - Console counts are UNIQUE mailbox counts, consistent with CSV.
+// - Console counts are UNIQUE mailbox counts, consistent with Excel.
 // - If an address has both win/lose emails, win ("o") wins and is not overwritten.
 //
 // SECURITY:
 // - Do NOT hardcode iCloud credentials. Use environment variables (.env).
-// - Revoke the leaked app-specific password immediately.
 
 const { ImapFlow } = require('imapflow');
-const fs = require('fs');
+const ExcelJS = require('exceljs');
 const path = require('path');
 require('dotenv').config();
 
@@ -24,14 +23,18 @@ function isLoseSubject(subject) {
   return subject.includes('抽選結果');
 }
 
+// Log helper
+function pct(n, d) {
+  if (!d) return '0.00%';
+  return `${((n / d) * 100).toFixed(2)}%`;
+}
+
 async function listIcloudLottery() {
-  const ICLOUD_USER = 'phanhangnga2001@icloud.com';
-  const ICLOUD_PASS = 'kdkv-dxtj-drtk-thpo';
-  // const ICLOUD_PASS = process.env.ICLOUD_PASS;
-  // const ICLOUD_PASS = process.env.ICLOUD_PASS;
+  const ICLOUD_USER = process.env.ICLOUD_USER;
+  const ICLOUD_PASS = process.env.ICLOUD_APP_PASSWORD;
 
   if (!ICLOUD_USER || !ICLOUD_PASS) {
-    console.error('Missing ICLOUD_USER / ICLOUD_PASS in .env');
+    console.error('Missing ICLOUD_USER / ICLOUD_APP_PASSWORD in .env');
     process.exit(1);
   }
 
@@ -99,7 +102,7 @@ async function listIcloudLottery() {
     }
 
     // ======================================================
-    // ✅ Direction B: UNIQUE counts (consistent with CSV)
+    // ✅ UNIQUE counts (consistent with Excel)
     // ======================================================
     const winUnique = [...resultMap.values()].filter(v => v === 'o').length;
     const loseUnique = [...resultMap.values()].filter(v => v === 'x').length;
@@ -112,7 +115,34 @@ async function listIcloudLottery() {
     console.log('=====================');
 
     // ======================================================
-    // 📌 EXPORT CSV — 当選(o) first → 落選(x) after (UNIQUE)
+    // ✅ ADDED: HIT RATE + UNIQUE email lists (win/lose)
+    // ======================================================
+    const winEmails = [];
+    const loseEmails = [];
+
+    for (const [mail, result] of resultMap.entries()) {
+      if (result === 'o') winEmails.push(mail);
+      else if (result === 'x') loseEmails.push(mail);
+    }
+
+    winEmails.sort((a, b) => a.localeCompare(b));
+    loseEmails.sort((a, b) => a.localeCompare(b));
+
+    console.log('\n========== HIT RATE ==========');
+    console.log(`当選率: ${pct(winUnique, totalUnique)} (${winUnique}/${totalUnique})`);
+    console.log(`落選率: ${pct(loseUnique, totalUnique)} (${loseUnique}/${totalUnique})`);
+    console.log('==============================');
+
+    console.log('\n========== CHECK DETAIL (UNIQUE) ==========');
+    console.log(`当選 emails (${winEmails.length}):`);
+    for (const mail of winEmails) console.log('  +', mail);
+
+    console.log(`\n落選 emails (${loseEmails.length}):`);
+    for (const mail of loseEmails) console.log('  -', mail);
+    console.log('==========================================');
+
+    // ======================================================
+    // 📌 EXPORT EXCEL — 当選(o) first → 落選(x) after (UNIQUE)
     // ======================================================
     const winList = [];
     const loseList = [];
@@ -126,15 +156,53 @@ async function listIcloudLottery() {
     winList.sort((a, b) => a.mail.localeCompare(b.mail));
     loseList.sort((a, b) => a.mail.localeCompare(b.mail));
 
-    const lines = ['mail,result'];
-    winList.forEach(r => lines.push(`${r.mail},${r.result}`));
-    loseList.forEach(r => lines.push(`${r.mail},${r.result}`));
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'icloud-lottery-export';
+    workbook.created = new Date();
 
-    const csvContent = lines.join('\n');
-    const outPath = path.join(__dirname, 'icloud_lottery_result.csv');
-    fs.writeFileSync(outPath, csvContent, 'utf8');
+    // Sheet 1: Results
+    const ws = workbook.addWorksheet('Results');
+    ws.columns = [
+      { header: 'mail', key: 'mail', width: 40 },
+      { header: 'result', key: 'result', width: 10 },
+    ];
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+    ws.getRow(1).font = { bold: true };
+    ws.autoFilter = { from: 'A1', to: 'B1' };
 
-    console.log(`CSV exported: ${outPath}`);
+    // o first, then x (same as your CSV export ordering)
+    winList.forEach(r => ws.addRow(r));
+    loseList.forEach(r => ws.addRow(r));
+
+    // Sheet 2: Summary
+    const ws2 = workbook.addWorksheet('Summary');
+    ws2.columns = [
+      { header: 'metric', key: 'metric', width: 25 },
+      { header: 'value', key: 'value', width: 40 },
+    ];
+    ws2.getRow(1).font = { bold: true };
+    ws2.addRow({ metric: 'win_unique', value: winUnique });
+    ws2.addRow({ metric: 'lose_unique', value: loseUnique });
+    ws2.addRow({ metric: 'total_unique', value: totalUnique });
+    ws2.addRow({ metric: 'win_rate', value: `${pct(winUnique, totalUnique)} (${winUnique}/${totalUnique})` });
+    ws2.addRow({ metric: 'lose_rate', value: `${pct(loseUnique, totalUnique)} (${loseUnique}/${totalUnique})` });
+
+    // Sheet 3: WinEmails (unique list)
+    const ws3 = workbook.addWorksheet('WinEmails');
+    ws3.columns = [{ header: 'mail', key: 'mail', width: 40 }];
+    ws3.getRow(1).font = { bold: true };
+    winEmails.forEach(mail => ws3.addRow({ mail }));
+
+    // Sheet 4: LoseEmails (unique list)
+    const ws4 = workbook.addWorksheet('LoseEmails');
+    ws4.columns = [{ header: 'mail', key: 'mail', width: 40 }];
+    ws4.getRow(1).font = { bold: true };
+    loseEmails.forEach(mail => ws4.addRow({ mail }));
+
+    const outPath = path.join(__dirname, 'icloud_lottery_result.xlsx');
+    await workbook.xlsx.writeFile(outPath);
+
+    console.log(`Excel exported: ${outPath}`);
   } catch (err) {
     console.error(err);
   } finally {
