@@ -1,3 +1,6 @@
 token.json
 pokemon_cre.json
 *.log
+node_modules/
+dist/
+build/
